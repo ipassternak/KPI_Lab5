@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -14,20 +17,21 @@ import (
 )
 
 var (
-	port = flag.Int("port", 8090, "load balancer port")
+	port       = flag.Int("port", 8090, "load balancer port")
 	timeoutSec = flag.Int("timeout-sec", 3, "request timeout time in seconds")
-	https = flag.Bool("https", false, "whether backends support HTTPs")
+	https      = flag.Bool("https", false, "whether backends support HTTPs")
 
 	traceEnabled = flag.Bool("trace", false, "whether to include tracing information into responses")
 )
 
 var (
-	timeout = time.Duration(*timeoutSec) * time.Second
+	timeout     = time.Duration(*timeoutSec) * time.Second
 	serversPool = []string{
 		"server1:8080",
 		"server2:8080",
 		"server3:8080",
 	}
+	healthServersPool = []string{}
 )
 
 func scheme() string {
@@ -84,22 +88,50 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 	}
 }
 
+func ipToHashNumber(ipStr string) (uint64, error) {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return 0, fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return 0, fmt.Errorf("not an IPv4 address: %s", ipStr)
+	}
+	hash := sha256.Sum256(ipv4)
+	number := binary.BigEndian.Uint64(hash[:8])
+	return number, nil
+}
+
 func main() {
 	flag.Parse()
 
-	// TODO: Використовуйте дані про стан сервреа, щоб підтримувати список тих серверів, яким можна відправляти ззапит.
-	for _, server := range serversPool {
-		server := server
-		go func() {
-			for range time.Tick(10 * time.Second) {
-				log.Println(server, health(server))
+	go func() {
+		for range time.Tick(10 * time.Second) {
+			healthServersPool = []string{}
+			for _, server := range serversPool {
+				healthState := health(server)
+				if healthState {
+					healthServersPool = append(healthServersPool, server)
+				}
 			}
-		}()
-	}
+		}
+	}()
 
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		// TODO: Рееалізуйте свій алгоритм балансувальника.
-		forward(serversPool[0], rw, r)
+		ip := r.RemoteAddr
+		hashSum, err := ipToHashNumber(ip)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		if len(healthServersPool) == 0 {
+			fmt.Println("Error: No health servers")
+			rw.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		serverIndex := hashSum % uint64(len(healthServersPool))
+		forward(healthServersPool[serverIndex], rw, r)
 	}))
 
 	log.Println("Starting load balancer...")
