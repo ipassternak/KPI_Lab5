@@ -111,18 +111,24 @@ func ipToHashNumber(ipStr string) (uint64, error) {
 	return number, nil
 }
 
+func healthCheck() {
+	healthServersPool = []string{}
+	for _, server := range serversPool {
+		healthState := health(server)
+		if healthState {
+			healthServersPool = append(healthServersPool, server)
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 
+	healthCheck()
+
 	go func() {
 		for range time.Tick(10 * time.Second) {
-			healthServersPool = []string{}
-			for _, server := range serversPool {
-				healthState := health(server)
-				if healthState {
-					healthServersPool = append(healthServersPool, server)
-				}
-			}
+			healthCheck()
 		}
 	}()
 
