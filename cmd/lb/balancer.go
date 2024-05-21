@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/roman-mazur/architecture-practice-4-template/httptools"
@@ -89,7 +90,14 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 }
 
 func ipToHashNumber(ipStr string) (uint64, error) {
-	ip := net.ParseIP(ipStr)
+	host := ipStr
+
+	if strings.Contains(ipStr, ":") {
+		host, _, _ = net.SplitHostPort(ipStr)
+	}
+
+	ip := net.ParseIP(host)
+
 	if ip == nil {
 		return 0, fmt.Errorf("invalid IP address: %s", ipStr)
 	}
