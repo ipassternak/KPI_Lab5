@@ -121,6 +121,26 @@ func healthCheck() {
 	}
 }
 
+func getRemoteIp(r *http.Request) string {
+	xForwardedFor := r.Header.Get("X-Forwarded-For")
+
+	if xForwardedFor != "" {
+		return strings.Split(xForwardedFor, ",")[0]
+	}
+
+	forwarder := r.Header.Get("Forwarded")
+
+	if forwarder != "" {
+		for _, part := range strings.Split(forwarder, ";") {
+			if strings.HasPrefix(part, "for=") {
+				return strings.TrimPrefix(part, "for=")
+			}
+		}
+	}
+
+	return r.RemoteAddr
+}
+
 func main() {
 	flag.Parse()
 
@@ -133,18 +153,25 @@ func main() {
 	}()
 
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
+		ip := getRemoteIp(r)
+
 		hashSum, err := ipToHashNumber(ip)
+
 		if err != nil {
 			fmt.Println("Error:", err)
 			return
 		}
+
 		if len(healthServersPool) == 0 {
 			fmt.Println("Error: No health servers")
 			rw.WriteHeader(http.StatusBadGateway)
 			return
 		}
+
 		serverIndex := hashSum % uint64(len(healthServersPool))
+
+		fmt.Printf("forwarding %s to %s\n", ip, healthServersPool[serverIndex])
+
 		forward(healthServersPool[serverIndex], rw, r)
 	}))
 
