@@ -3,6 +3,7 @@ package integration
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -29,9 +30,9 @@ var (
 )
 
 func (s *BalancerSuite) TestIpToHashNumber(c *C) {
-	// if _, exists := os.LookupEnv("INTEGRATION_TEST"); !exists {
-	// 	c.Skip("Integration test is not enabled")
-	// }
+	if _, exists := os.LookupEnv("INTEGRATION_TEST"); !exists {
+		c.Skip("Integration test is not enabled")
+	}
 
 	ips := []string{
 		"87.154.128.68",
