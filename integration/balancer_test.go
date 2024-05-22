@@ -21,7 +21,7 @@ var (
 	client = http.Client{
 		Timeout: 3 * time.Second,
 	}
-	baseAddress = "http://127.0.0.1:8090"
+	baseAddress = "http://balancer:8090"
 	servers     = []string{
 		"server1:8080",
 		"server2:8080",
@@ -60,9 +60,9 @@ func (s *BalancerSuite) TestIpToHashNumber(c *C) {
 
 	wg := sync.WaitGroup{}
 
-	for _, ip := range ips {
-		wg.Add(1)
+	wg.Add(len(ips))
 
+	for _, ip := range ips {
 		go func(ip string) {
 			defer wg.Done()
 
@@ -91,6 +91,92 @@ func (s *BalancerSuite) TestIpToHashNumber(c *C) {
 	wg.Wait()
 }
 
+var (
+	parallel = 1000
+	interval = time.Second
+	total    = 10
+)
+
 func BenchmarkBalancer(b *testing.B) {
-	// TODO: Реалізуйте інтеграційний бенчмарк для балансувальникка.
+	ips := []string{
+		"87.154.128.68",
+		"55.234.146.40",
+		"93.167.203.49",
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(parallel)
+
+	start := make(chan struct{})
+
+	benchmarks := make([][]time.Duration, parallel)
+
+	for i := 0; i < parallel; i++ {
+		req, _ := http.NewRequest("GET", baseAddress, nil)
+
+		req.Header.Set("X-Forwarded-For", ips[i%len(ips)])
+
+		go func(r *http.Request) {
+			defer wg.Done()
+			var (
+				count     int
+				durations = make([]time.Duration, total)
+			)
+
+			<-start
+
+			for range time.Tick(interval) {
+				start := time.Now()
+				resp, fetchErr := client.Do(r)
+
+				if fetchErr != nil {
+					b.Logf("Failed to get response: %s", fetchErr)
+					return
+				}
+
+				resp.Body.Close()
+				durations[count] = time.Since(start)
+
+				if count++; count == total {
+					break
+				}
+			}
+
+			benchmarks[i] = durations
+		}(req)
+	}
+
+	close(start)
+
+	wg.Wait()
+
+	var result time.Duration
+
+	for i := 0; i < total; i++ {
+		var (
+			sum   time.Duration
+			count int
+		)
+
+		for j := 0; j < parallel; j++ {
+			benchmark := benchmarks[j]
+
+			if benchmark == nil {
+				continue
+			}
+
+			res := benchmark[i]
+
+			if res == 0 {
+				continue
+			}
+
+			sum += res
+			count++
+		}
+
+		result += sum / time.Duration(count)
+	}
+
+	b.Logf("Average request duration: %v", time.Duration(result/time.Duration(total)))
 }
