@@ -3,7 +3,6 @@ package integration
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -30,9 +29,9 @@ var (
 )
 
 func (s *BalancerSuite) TestIpToHashNumber(c *C) {
-	if _, exists := os.LookupEnv("INTEGRATION_TEST"); !exists {
-		c.Skip("Integration test is not enabled")
-	}
+	// if _, exists := os.LookupEnv("INTEGRATION_TEST"); !exists {
+	// 	c.Skip("Integration test is not enabled")
+	// }
 
 	ips := []string{
 		"87.154.128.68",
@@ -73,7 +72,7 @@ func (s *BalancerSuite) TestIpToHashNumber(c *C) {
 			resp, fetchErr := client.Do(req)
 
 			if fetchErr != nil {
-				c.Error("cannot connect to lb", fetchErr)
+				c.Fatal(fetchErr)
 			}
 
 			lbFrom := resp.Header.Get("lb-from")
