@@ -26,9 +26,18 @@ type Db struct {
 	segmentIndex   int
 	maxSegmentSize int64
 	outDir         string
+	// writeChan      chan struct{key, value string}
+
+	// Додаємо м'ютекс для безпечного доступу до hashIndex
+	// mu             sync.Mutex
 
 	index hashIndex
 }
+
+// Дописати метод Close, який завершує роботу БД
+// close(db.writeChan)
+// Закрити файли для читання, виставити флаг isClosed
+// При спробі запису/читання в закриту БД повертати помилку
 
 func (db *Db) loadSegment() error {
 	segmentPath := filepath.Join(db.outDir, fmt.Sprintf("%d.db", db.segmentIndex))
@@ -46,6 +55,8 @@ func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 		index:          make(hashIndex),
 		maxSegmentSize: maxSegmentSize,
 		outDir:         dir,
+		// writeChan:      make(chan struct{key, value string}),
+		// mu:             sync.Mutex{},
 	}
 	err := db.recover()
 	if err != nil && err != io.EOF {
@@ -55,6 +66,17 @@ func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Ініціалізуємо нову рутину для запису в файл:
+	// Рутина повинна містити нескінченний цикл, який чекає на дані в каналі та на стоп сигнал
+	// for data := range writeChan {
+	// 	// Записуємо дані в файл
+	//	}
+	// В канал повинна надходити структура, яка містить ключ та значення
+	// {key: "key", value: "value"}
+	// Якщо ми хочемо хендлити помилки, то можемо використати канал для помилок
+	// Канал для помилок може бути реалізовний в межах Put та БД
+	// Можна взяти код з Put
 	return db, nil
 }
 
@@ -141,7 +163,9 @@ func (db *Db) Close() error {
 }
 
 func (db *Db) Get(key string) (string, error) {
+	// db.mu.Lock()
 	segmentInfo, ok := db.index[key]
+	// db.mu.Unlock()
 	if !ok {
 		return "", ErrNotFound
 	}
