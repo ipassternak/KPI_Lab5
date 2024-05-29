@@ -15,151 +15,152 @@ import (
 var ErrNotFound = fmt.Errorf("record does not exist")
 
 const (
-	SEGMENT_EXT = ".seg"
+	DbSegmentExt      = ".seg"
+	recoverbufferSize = 8192
 )
 
 type hashIndex map[string][2]int64
 
 type Db struct {
-	out            *os.File
-	outOffset      int64
+	segment        *os.File
+	segmentOffset  int64
 	segmentIndex   int
 	maxSegmentSize int64
-	outDir         string
+	dir            string
 
 	index hashIndex
-}
-
-func (db *Db) loadSegment() error {
-	segmentPath := filepath.Join(db.outDir, fmt.Sprintf("%d.db", db.segmentIndex))
-	segment, err := os.OpenFile(segmentPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	db.out = segment
-	db.outOffset = 0
-	return nil
 }
 
 func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 	db := &Db{
 		index:          make(hashIndex),
 		maxSegmentSize: maxSegmentSize,
-		outDir:         dir,
+		dir:            dir,
 	}
 	err := db.recover()
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	err = db.loadSegment()
 	if err != nil {
 		return nil, err
 	}
 	return db, nil
 }
 
-const bufSize = 8192
+func (db *Db) setIndex(key string) {
+	db.index[key] = [2]int64{int64(db.segmentIndex), db.segmentOffset}
+}
 
-func (db *Db) recoverSegmentIndex() error {
-	files, err := os.ReadDir(db.outDir)
-	if err != nil {
-		return err
+func (db *Db) getIndex(key string) (int64, int64, bool) {
+	segmentInfo, ok := db.index[key]
+	return segmentInfo[0], segmentInfo[1], ok
+}
+
+func (db *Db) getSegmentPath() string {
+	filename := fmt.Sprintf("%d%s", db.segmentIndex, DbSegmentExt)
+	return filepath.Join(db.dir, filename)
+}
+
+func (db *Db) toSegmentPath(index int64) string {
+	filename := fmt.Sprintf("%d%s", index, DbSegmentExt)
+	return filepath.Join(db.dir, filename)
+}
+
+func (db *Db) loadSegment() error {
+	segmentPath := db.getSegmentPath()
+	segment, err := os.OpenFile(segmentPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	if err == nil {
+		db.segment = segment
+		db.segmentOffset = 0
 	}
+	return err
+}
 
-	var segmentIndex int
-
+func (db *Db) recoverSegmentIndex() (bool, error) {
+	files, err := os.ReadDir(db.dir)
+	if err != nil {
+		return true, err
+	}
 	for _, file := range files {
 		filename := file.Name()
-		if filepath.Ext(filename) == SEGMENT_EXT {
-			basename := strings.TrimSuffix(filename, SEGMENT_EXT)
-			index, err := strconv.Atoi(basename)
+		if filepath.Ext(filename) == DbSegmentExt {
+			basename := strings.TrimSuffix(filename, DbSegmentExt)
+			segmentIndex, err := strconv.Atoi(basename)
 			if err != nil {
-				return err
+				return true, err
 			}
-			if index > segmentIndex {
-				db.segmentIndex = index
+			if segmentIndex > db.segmentIndex {
+				db.segmentIndex = segmentIndex
 			}
 		}
 	}
-
-	return nil
+	return len(files) == 0, nil
 }
 
 func (db *Db) recover() error {
-	err := db.recoverSegmentIndex()
+	empty, err := db.recoverSegmentIndex()
 	if err != nil {
 		return err
 	}
-	for i := 0; i <= db.segmentIndex; i++ {
-		input, err := os.OpenFile(fmt.Sprintf("%d%s", i, SEGMENT_EXT), os.O_RDONLY, 0o600)
+	for i := 0; !empty && i <= db.segmentIndex; i++ {
+		segmentPath := db.getSegmentPath()
+		input, err := os.OpenFile(segmentPath, os.O_RDONLY, 0o600)
 		if err != nil {
 			return err
 		}
 		defer input.Close()
-
-		var buf [bufSize]byte
-		in := bufio.NewReaderSize(input, bufSize)
+		var buffer [recoverbufferSize]byte
+		in := bufio.NewReaderSize(input, recoverbufferSize)
 		for err == nil {
 			var (
 				header, data []byte
 				n            int
 			)
-			header, err = in.Peek(bufSize)
+			header, err = in.Peek(recoverbufferSize)
 			if err == io.EOF {
 				if len(header) == 0 {
-					return err
+					continue
 				}
 			} else if err != nil {
 				return err
 			}
 			size := binary.LittleEndian.Uint32(header)
-
-			if size < bufSize {
-				data = buf[:size]
+			if size < recoverbufferSize {
+				data = buffer[:size]
 			} else {
 				data = make([]byte, size)
 			}
 			n, err = in.Read(data)
-
 			if err == nil {
 				if n != int(size) {
 					return fmt.Errorf("corrupted file")
 				}
-
 				var e entry
 				e.Decode(data)
-				db.index[e.key] = [2]int64{int64(i), db.outOffset}
-				db.outOffset += int64(n)
+				db.setIndex(e.key)
+				db.segmentOffset += int64(n)
 			}
 		}
 	}
-	return nil
+	return db.loadSegment()
 }
 
 func (db *Db) Close() error {
-	return db.out.Close()
+	return db.segment.Close()
 }
 
 func (db *Db) Get(key string) (string, error) {
-	segmentInfo, ok := db.index[key]
-	if !ok {
+	segmentIndex, segmentOffset, found := db.getIndex(key)
+	if !found {
 		return "", ErrNotFound
 	}
-
-	segmentIndex := segmentInfo[0]
-	segmentOffset := segmentInfo[1]
-
-	file, err := os.Open(fmt.Sprintf("%d%s", segmentIndex, SEGMENT_EXT))
+	segmentPath := db.toSegmentPath(segmentIndex)
+	file, err := os.Open(segmentPath)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-
 	_, err = file.Seek(segmentOffset, 0)
 	if err != nil {
 		return "", err
 	}
-
 	reader := bufio.NewReader(file)
 	value, err := readValue(reader)
 	if err != nil {
@@ -173,34 +174,59 @@ func (db *Db) Put(key, value string) error {
 		key:   key,
 		value: value,
 	}
-	n, err := db.out.Write(e.Encode())
+	n, err := db.segment.Write(e.Encode())
 	if err == nil {
-		db.index[key] = [2]int64{int64(db.segmentIndex), db.outOffset}
-		db.outOffset += int64(n)
-		if db.outOffset >= db.maxSegmentSize {
-			db.out.Close()
+		db.setIndex(key)
+		db.segmentOffset += int64(n)
+		if db.segmentOffset >= db.maxSegmentSize {
+			db.segment.Close()
 			db.segmentIndex++
-			err := db.loadSegment()
-			if err != nil {
-				return err
-			}
+			err = db.loadSegment()
 		}
 	}
 	return err
 }
 
+func (db *Db) clearSegments() error {
+	var err error
+	db.segment.Close()
+	for i := 0; i <= db.segmentIndex; i++ {
+		segmentPath := db.toSegmentPath(int64(i))
+		err = os.Remove(segmentPath)
+	}
+	if err != nil {
+		segmentPath := db.getSegmentPath()
+		db.segment, err = os.OpenFile(segmentPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	}
+	return err
+}
+
 func (db *Db) Merge() error {
-	swapFilename := fmt.Sprintf("%d%s", time.Now().Unix(), SEGMENT_EXT)
-	swapFile, err := os.OpenFile(swapFilename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	var (
+		err    error
+		offset int64
+	)
+	swapFilename := fmt.Sprintf("%d%s", time.Now().Unix(), DbSegmentExt)
+	swap, err := os.OpenFile(swapFilename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		swapFile.Close()
-		os.Remove(swapFilename)
+		swap.Close()
+		if err != nil {
+			os.Remove(swapFilename)
+		} else {
+			db.segment = swap
+			db.segmentOffset = int64(offset)
+			db.segmentIndex = 0
+		}
 	}()
 	for key := range db.index {
-		value, err := db.Get(key)
+		var (
+			value string
+			n     int
+		)
+		value, err = db.Get(key)
 		if err != nil {
 			return err
 		}
@@ -208,24 +234,16 @@ func (db *Db) Merge() error {
 			key:   key,
 			value: value,
 		}
-		_, err = swapFile.Write(e.Encode())
+		n, err = swap.Write(e.Encode())
 		if err != nil {
 			return err
 		}
+		offset += int64(n)
 	}
-
-	for i := 0; i <= db.segmentIndex; i++ {
-		segmentPath := filepath.Join(db.outDir, fmt.Sprintf("%d%s", i, SEGMENT_EXT))
-		err := os.Remove(segmentPath)
-		if err != nil {
-			return err
-		}
+	err = db.clearSegments()
+	if err == nil {
+		segmentPath := db.toSegmentPath(0)
+		err = os.Rename(swapFilename, segmentPath)
 	}
-
-	err = os.Rename(swapFilename, fmt.Sprintf("%d%s", 0, SEGMENT_EXT))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }

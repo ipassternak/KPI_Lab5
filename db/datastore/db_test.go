@@ -1,32 +1,30 @@
 package datastore
 
 import (
-	"io/ioutil"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
 func TestDb_Put(t *testing.T) {
-	dir, err := ioutil.TempDir("", "test-db")
+	dir, err := os.MkdirTemp("", "test-db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
-	db, err := NewDb(dir)
+	db, err := NewDb(dir, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	pairs := [][]string {
+	pairs := [][]string{
 		{"key1", "value1"},
 		{"key2", "value2"},
 		{"key3", "value3"},
 	}
 
-	outFile, err := os.Open(filepath.Join(dir, outFileName))
+	outFile, err := os.Open(db.getSegmentPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +62,7 @@ func TestDb_Put(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if size1 * 2 != outInfo.Size() {
+		if size1*2 != outInfo.Size() {
 			t.Errorf("Unexpected size (%d vs %d)", size1, outInfo.Size())
 		}
 	})
@@ -73,7 +71,7 @@ func TestDb_Put(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		db, err = NewDb(dir)
+		db, err = NewDb(dir, 1024)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,5 +86,4 @@ func TestDb_Put(t *testing.T) {
 			}
 		}
 	})
-
 }
