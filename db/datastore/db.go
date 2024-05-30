@@ -73,33 +73,35 @@ func (db *Db) loadSegment() error {
 	return err
 }
 
-func (db *Db) recoverSegmentIndex() (bool, error) {
+func (db *Db) recoverSegmentIndex() (int, error) {
 	files, err := os.ReadDir(db.dir)
 	if err != nil {
-		return true, err
+		return -1, err
 	}
+	segmentIndex := -1
 	for _, file := range files {
 		filename := file.Name()
 		if filepath.Ext(filename) == DbSegmentExt {
 			basename := strings.TrimSuffix(filename, DbSegmentExt)
-			segmentIndex, err := strconv.Atoi(basename)
+			index, err := strconv.Atoi(basename)
 			if err != nil {
-				return true, err
+				return -1, err
 			}
-			if segmentIndex > db.segmentIndex {
-				db.segmentIndex = segmentIndex
+			if index > segmentIndex {
+				segmentIndex = index
 			}
 		}
 	}
-	return len(files) == 0, nil
+	return segmentIndex, nil
 }
 
 func (db *Db) recover() error {
-	empty, err := db.recoverSegmentIndex()
+	segmentIndex, err := db.recoverSegmentIndex()
 	if err != nil {
 		return err
 	}
-	for i := 0; !empty && i <= db.segmentIndex; i++ {
+	for i := 0; i <= segmentIndex; i++ {
+		db.segmentIndex = i
 		segmentPath := db.getSegmentPath()
 		input, err := os.OpenFile(segmentPath, os.O_RDONLY, 0o600)
 		if err != nil {

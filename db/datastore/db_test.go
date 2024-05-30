@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const segmentSize = 1024
+
 func TestDb_Put(t *testing.T) {
 	dir, err := os.MkdirTemp("", "test-db")
 	if err != nil {
@@ -12,7 +14,7 @@ func TestDb_Put(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	db, err := NewDb(dir, 1024)
+	db, err := NewDb(dir, segmentSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,11 +69,31 @@ func TestDb_Put(t *testing.T) {
 		}
 	})
 
+	t.Run("segmentation", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			err := db.Put("key", "value")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		outInfo, err := outFile.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outInfo.Size() < segmentSize {
+			t.Errorf("Unexpected size (%d)", outInfo.Size())
+		}
+		segments, _ := os.ReadDir(dir)
+		if len(segments) < 2 {
+			t.Errorf("Expected 2 or more segment files, got (%d)", len(segments))
+		}
+	})
+
 	t.Run("new db process", func(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		db, err = NewDb(dir, 1024)
+		db, err = NewDb(dir, segmentSize)
 		if err != nil {
 			t.Fatal(err)
 		}
