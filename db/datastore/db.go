@@ -19,7 +19,8 @@ const (
 	recoverbufferSize = 8192
 )
 
-type hashIndex map[string][2]int64
+type hashEntry [2]int64
+type hashIndex map[string]hashEntry
 
 type Db struct {
 	segment        *os.File
@@ -45,7 +46,7 @@ func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 }
 
 func (db *Db) setIndex(key string) {
-	db.index[key] = [2]int64{int64(db.segmentIndex), db.segmentOffset}
+	db.index[key] = hashEntry{int64(db.segmentIndex), db.segmentOffset}
 }
 
 func (db *Db) getIndex(key string) (int64, int64, bool) {
@@ -102,6 +103,7 @@ func (db *Db) recover() error {
 	}
 	for i := 0; i <= segmentIndex; i++ {
 		db.segmentIndex = i
+		db.segmentOffset = 0
 		segmentPath := db.getSegmentPath()
 		input, err := os.OpenFile(segmentPath, os.O_RDONLY, 0o600)
 		if err != nil {
@@ -189,63 +191,61 @@ func (db *Db) Put(key, value string) error {
 	return err
 }
 
-func (db *Db) clearSegments() error {
-	var err error
-	db.segment.Close()
-	for i := 0; i <= db.segmentIndex; i++ {
-		segmentPath := db.toSegmentPath(int64(i))
-		err = os.Remove(segmentPath)
-	}
-	if err != nil {
-		segmentPath := db.getSegmentPath()
-		db.segment, err = os.OpenFile(segmentPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-	}
-	return err
-}
-
-func (db *Db) Merge() error {
+func (db *Db) Copy(filename string) (int64, hashIndex, error) {
 	var (
-		err    error
-		offset int64
+		segmentOffset int64
+		index         = make(hashIndex)
 	)
-	swapFilename := fmt.Sprintf("%d%s", time.Now().Unix(), DbSegmentExt)
-	swap, err := os.OpenFile(swapFilename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	swap, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
-	defer func() {
-		swap.Close()
-		if err != nil {
-			os.Remove(swapFilename)
-		} else {
-			db.segment = swap
-			db.segmentOffset = int64(offset)
-			db.segmentIndex = 0
-		}
-	}()
+	defer swap.Close()
 	for key := range db.index {
-		var (
-			value string
-			n     int
-		)
-		value, err = db.Get(key)
+		value, err := db.Get(key)
 		if err != nil {
-			return err
+			os.Remove(filename)
+			return 0, nil, err
 		}
 		e := entry{
 			key:   key,
 			value: value,
 		}
-		n, err = swap.Write(e.Encode())
+		offset, err := swap.Write(e.Encode())
 		if err != nil {
-			return err
+			os.Remove(filename)
+			return 0, nil, err
 		}
-		offset += int64(n)
+		index[key] = hashEntry{0, segmentOffset}
+		segmentOffset += int64(offset)
 	}
-	err = db.clearSegments()
-	if err == nil {
-		segmentPath := db.toSegmentPath(0)
-		err = os.Rename(swapFilename, segmentPath)
+	return segmentOffset, index, nil
+}
+
+func (db *Db) Merge() error {
+	swapFilename := db.toSegmentPath(time.Now().Unix())
+	segmentOffset, index, err := db.Copy(swapFilename)
+	if err != nil {
+		return err
 	}
-	return err
+	segmentIndex := db.segmentIndex
+	segmentPath := db.toSegmentPath(0)
+	err = os.Rename(swapFilename, segmentPath)
+	if err != nil {
+		return err
+	}
+	segment, err := os.OpenFile(segmentPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	db.segment.Close()
+	db.segmentIndex = 0
+	db.index = index
+	db.segmentOffset = segmentOffset
+	db.segment = segment
+	for i := 1; i <= segmentIndex; i++ {
+		segmentPath := db.toSegmentPath(int64(i))
+		os.Remove(segmentPath)
+	}
+	return nil
 }

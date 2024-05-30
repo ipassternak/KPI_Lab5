@@ -69,9 +69,11 @@ func TestDb_Put(t *testing.T) {
 		}
 	})
 
+	pairs = append(pairs, []string{"key4", "value4"})
+
 	t.Run("segmentation", func(t *testing.T) {
 		for i := 0; i < 1000; i++ {
-			err := db.Put("key", "value")
+			err := db.Put("key4", "value4")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,6 +108,31 @@ func TestDb_Put(t *testing.T) {
 			if value != pair[1] {
 				t.Errorf("Bad value returned expected %s, got %s", pair[1], value)
 			}
+		}
+	})
+
+	t.Run("merge", func(t *testing.T) {
+		err = db.Merge()
+		if err != nil {
+			t.Fatal(err)
+		}
+		segments, _ := os.ReadDir(dir)
+		if len(segments) > 1 {
+			t.Errorf("Expected single segment file after merge, got (%d)", len(segments))
+		}
+		for _, pair := range pairs {
+			value, _ := db.Get(pair[0])
+			if value != pair[1] {
+				t.Errorf("Bad value returned expected %s, got %s", pair[1], value)
+			}
+		}
+		err = db.Put("key5", "value5")
+		if err != nil {
+			t.Errorf("Cannot put %s: %s", "key5", err)
+		}
+		value, _ := db.Get("key5")
+		if value != "value5" {
+			t.Errorf("Bad value returned expected %s, got %s", "value5", value)
 		}
 	})
 }
