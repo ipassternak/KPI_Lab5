@@ -1,32 +1,32 @@
 package datastore
 
 import (
-	"io/ioutil"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
+const segmentSize = 1024
+
 func TestDb_Put(t *testing.T) {
-	dir, err := ioutil.TempDir("", "test-db")
+	dir, err := os.MkdirTemp("", "test-db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
-	db, err := NewDb(dir)
+	db, err := NewDb(dir, segmentSize)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	pairs := [][]string {
+	pairs := [][]string{
 		{"key1", "value1"},
 		{"key2", "value2"},
 		{"key3", "value3"},
 	}
 
-	outFile, err := os.Open(filepath.Join(dir, outFileName))
+	outFile, err := os.Open(db.getSegmentPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +64,30 @@ func TestDb_Put(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if size1 * 2 != outInfo.Size() {
+		if size1*2 != outInfo.Size() {
 			t.Errorf("Unexpected size (%d vs %d)", size1, outInfo.Size())
+		}
+	})
+
+	pairs = append(pairs, []string{"key4", "value4"})
+
+	t.Run("segmentation", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			err := db.Put("key4", "value4")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		outInfo, err := outFile.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outInfo.Size() < segmentSize {
+			t.Errorf("Unexpected size (%d)", outInfo.Size())
+		}
+		segments, _ := os.ReadDir(dir)
+		if len(segments) < 2 {
+			t.Errorf("Expected 2 or more segment files, got (%d)", len(segments))
 		}
 	})
 
@@ -73,7 +95,7 @@ func TestDb_Put(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		db, err = NewDb(dir)
+		db, err = NewDb(dir, segmentSize)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,4 +111,28 @@ func TestDb_Put(t *testing.T) {
 		}
 	})
 
+	t.Run("merge", func(t *testing.T) {
+		err = db.Merge()
+		if err != nil {
+			t.Fatal(err)
+		}
+		segments, _ := os.ReadDir(dir)
+		if len(segments) > 1 {
+			t.Errorf("Expected single segment file after merge, got (%d)", len(segments))
+		}
+		for _, pair := range pairs {
+			value, _ := db.Get(pair[0])
+			if value != pair[1] {
+				t.Errorf("Bad value returned expected %s, got %s", pair[1], value)
+			}
+		}
+		err = db.Put("key5", "value5")
+		if err != nil {
+			t.Errorf("Cannot put %s: %s", "key5", err)
+		}
+		value, _ := db.Get("key5")
+		if value != "value5" {
+			t.Errorf("Bad value returned expected %s, got %s", "value5", value)
+		}
+	})
 }
