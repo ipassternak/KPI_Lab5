@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-var ErrNotFound = fmt.Errorf("record does not exist")
+var (
+	ErrNotFound = fmt.Errorf("record does not exist")
+	ErrDbClosed = fmt.Errorf("db is closed")
+)
 
 const (
 	DbSegmentExt      = ".seg"
@@ -23,15 +26,20 @@ const (
 type hashEntry [2]int64
 type hashIndex map[string]hashEntry
 
+type writeMsg struct {
+	e     entry
+	errCh chan error
+}
+
 type Db struct {
 	segment        *os.File
 	segmentOffset  int64
 	segmentIndex   int
 	maxSegmentSize int64
 	dir            string
-	// writeChan      chan struct{key, value string}
-
-	mu sync.RWMutex
+	writeCh        chan writeMsg
+	mu             sync.RWMutex
+	isClosed       bool
 
 	index hashIndex
 }
@@ -39,6 +47,7 @@ type Db struct {
 func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 	db := &Db{
 		index:          make(hashIndex),
+		writeCh:        make(chan writeMsg),
 		maxSegmentSize: maxSegmentSize,
 		dir:            dir,
 	}
@@ -46,18 +55,29 @@ func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Ініціалізуємо нову рутину для запису в файл:
-	// Рутина повинна містити нескінченний цикл, який чекає на дані в каналі та на стоп сигнал
-	// for data := range writeChan {
-	// 	// Записуємо дані в файл
-	//	}
-	// В канал повинна надходити структура, яка містить ключ та значення
-	// {key: "key", value: "value"}
-	// Якщо ми хочемо хендлити помилки, то можемо використати канал для помилок
-	// Канал для помилок може бути реалізовний в межах Put та БД
-	// Можна взяти код з Put
+	go db.write()
 	return db, nil
+}
+
+func (db *Db) write() {
+	for msg := range db.writeCh {
+		db.mu.Lock()
+		n, err := db.segment.Write(msg.e.Encode())
+		if err != nil {
+			msg.errCh <- fmt.Errorf("failed to put %s: %s", msg.e.key, msg.e.value)
+		} else {
+			msg.errCh <- nil
+			db.setIndex(msg.e.key)
+			db.segmentOffset += int64(n)
+			if db.segmentOffset >= db.maxSegmentSize {
+				db.segment.Close()
+				db.segmentIndex++
+				db.loadSegment()
+			}
+			db.mu.Unlock()
+		}
+	}
+	fmt.Println("write channel closed")
 }
 
 func (db *Db) setIndex(key string) {
@@ -70,8 +90,7 @@ func (db *Db) getIndex(key string) (int64, int64, bool) {
 }
 
 func (db *Db) getSegmentPath() string {
-	filename := fmt.Sprintf("%d%s", db.segmentIndex, DbSegmentExt)
-	return filepath.Join(db.dir, filename)
+	return db.toSegmentPath(int64(db.segmentIndex))
 }
 
 func (db *Db) toSegmentPath(index int64) string {
@@ -162,10 +181,18 @@ func (db *Db) recover() error {
 }
 
 func (db *Db) Close() error {
+	if db.isClosed {
+		return nil
+	}
+	close(db.writeCh)
+	db.isClosed = true
 	return db.segment.Close()
 }
 
 func (db *Db) Get(key string) (string, error) {
+	if db.isClosed {
+		return "", ErrDbClosed
+	}
 	db.mu.RLock()
 	segmentIndex, segmentOffset, found := db.getIndex(key)
 	db.mu.RUnlock()
@@ -191,23 +218,16 @@ func (db *Db) Get(key string) (string, error) {
 }
 
 func (db *Db) Put(key, value string) error {
+	if db.isClosed {
+		return ErrDbClosed
+	}
 	e := entry{
 		key:   key,
 		value: value,
 	}
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	n, err := db.segment.Write(e.Encode())
-	if err == nil {
-		db.setIndex(key)
-		db.segmentOffset += int64(n)
-		if db.segmentOffset >= db.maxSegmentSize {
-			db.segment.Close()
-			db.segmentIndex++
-			err = db.loadSegment()
-		}
-	}
-	return err
+	errCh := make(chan error)
+	db.writeCh <- writeMsg{e, errCh}
+	return <-errCh
 }
 
 func (db *Db) Copy(filename string) (int64, hashIndex, error) {
@@ -242,6 +262,9 @@ func (db *Db) Copy(filename string) (int64, hashIndex, error) {
 }
 
 func (db *Db) Merge() error {
+	if db.isClosed {
+		return ErrDbClosed
+	}
 	swapFilename := db.toSegmentPath(time.Now().Unix())
 	segmentOffset, index, err := db.Copy(swapFilename)
 	if err != nil {
