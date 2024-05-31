@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,8 +31,7 @@ type Db struct {
 	dir            string
 	// writeChan      chan struct{key, value string}
 
-	// Додаємо м'ютекс для безпечного доступу до hashIndex
-	// mu             sync.Mutex
+	mu sync.RWMutex
 
 	index hashIndex
 }
@@ -41,8 +41,6 @@ func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
 		index:          make(hashIndex),
 		maxSegmentSize: maxSegmentSize,
 		dir:            dir,
-		// writeChan:      make(chan struct{key, value string}),
-		// mu:             sync.Mutex{},
 	}
 	err := db.recover()
 	if err != nil {
@@ -168,7 +166,9 @@ func (db *Db) Close() error {
 }
 
 func (db *Db) Get(key string) (string, error) {
+	db.mu.RLock()
 	segmentIndex, segmentOffset, found := db.getIndex(key)
+	db.mu.RUnlock()
 	if !found {
 		return "", ErrNotFound
 	}
@@ -195,6 +195,8 @@ func (db *Db) Put(key, value string) error {
 		key:   key,
 		value: value,
 	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	n, err := db.segment.Write(e.Encode())
 	if err == nil {
 		db.setIndex(key)
@@ -255,11 +257,13 @@ func (db *Db) Merge() error {
 	if err != nil {
 		return err
 	}
+	db.mu.Lock()
 	db.segment.Close()
 	db.segmentIndex = 0
 	db.index = index
 	db.segmentOffset = segmentOffset
 	db.segment = segment
+	db.mu.Unlock()
 	for i := 1; i <= segmentIndex; i++ {
 		segmentPath := db.toSegmentPath(int64(i))
 		os.Remove(segmentPath)
