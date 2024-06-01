@@ -2,10 +2,12 @@ package datastore
 
 import (
 	"os"
+	"sync"
 	"testing"
 )
 
 const segmentSize = 1024
+const poolSize = 1000
 
 func TestDb_Put(t *testing.T) {
 	dir, err := os.MkdirTemp("", "test-db")
@@ -14,7 +16,10 @@ func TestDb_Put(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	db, err := NewDb(dir, segmentSize)
+	db, err := NewDb(dir, DbOptions{
+		MaxSegmentSize: segmentSize,
+		WorkerPoolSize: poolSize,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +100,10 @@ func TestDb_Put(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		db, err = NewDb(dir, segmentSize)
+		db, err = NewDb(dir, DbOptions{
+			MaxSegmentSize: segmentSize,
+			WorkerPoolSize: poolSize,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,6 +141,24 @@ func TestDb_Put(t *testing.T) {
 		value, _ := db.Get("key5")
 		if value != "value5" {
 			t.Errorf("Bad value returned expected %s, got %s", "value5", value)
+		}
+	})
+
+	t.Run("parallel reading", func(t *testing.T) {
+		var (
+			w   sync.WaitGroup
+			err error
+		)
+		w.Add(poolSize * 5)
+		for range poolSize * 5 {
+			go func() {
+				defer w.Done()
+				_, err = db.Get("key2")
+			}()
+		}
+		w.Wait()
+		if err != nil {
+			t.Fatal(err)
 		}
 	})
 }

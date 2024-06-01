@@ -23,6 +23,11 @@ const (
 	recoverbufferSize = 8192
 )
 
+type DbOptions struct {
+	MaxSegmentSize int64
+	WorkerPoolSize int
+}
+
 type hashEntry [2]int64
 type hashIndex map[string]hashEntry
 
@@ -40,43 +45,25 @@ type Db struct {
 	writeCh        chan writeMsg
 	mu             sync.RWMutex
 	isClosed       bool
+	wq             *workerQueue
 
 	index hashIndex
 }
 
-func NewDb(dir string, maxSegmentSize int64) (*Db, error) {
+func NewDb(dir string, options DbOptions) (*Db, error) {
 	db := &Db{
 		index:          make(hashIndex),
 		writeCh:        make(chan writeMsg),
-		maxSegmentSize: maxSegmentSize,
+		maxSegmentSize: options.MaxSegmentSize,
 		dir:            dir,
 	}
+	db.wq = newWorkerQueue(db.get, options.WorkerPoolSize)
 	err := db.recover()
 	if err != nil {
 		return nil, err
 	}
 	go db.write()
 	return db, nil
-}
-
-func (db *Db) write() {
-	for msg := range db.writeCh {
-		db.mu.Lock()
-		n, err := db.segment.Write(msg.e.Encode())
-		if err != nil {
-			msg.errCh <- fmt.Errorf("failed to put %s: %s", msg.e.key, msg.e.value)
-		} else {
-			msg.errCh <- nil
-			db.setIndex(msg.e.key)
-			db.segmentOffset += int64(n)
-			if db.segmentOffset >= db.maxSegmentSize {
-				db.segment.Close()
-				db.segmentIndex++
-				db.loadSegment()
-			}
-		}
-		db.mu.Unlock()
-	}
 }
 
 func (db *Db) setIndex(key string) {
@@ -184,11 +171,12 @@ func (db *Db) Close() error {
 		return nil
 	}
 	close(db.writeCh)
+	db.wq.Close()
 	db.isClosed = true
 	return db.segment.Close()
 }
 
-func (db *Db) Get(key string) (string, error) {
+func (db *Db) get(key string) (string, error) {
 	if db.isClosed {
 		return "", ErrDbClosed
 	}
@@ -216,6 +204,30 @@ func (db *Db) Get(key string) (string, error) {
 	return value, nil
 }
 
+func (db *Db) Get(key string) (string, error) {
+	return db.wq.Do(key)
+}
+
+func (db *Db) write() {
+	for msg := range db.writeCh {
+		db.mu.Lock()
+		n, err := db.segment.Write(msg.e.Encode())
+		if err != nil {
+			msg.errCh <- fmt.Errorf("failed to put %s: %s", msg.e.key, msg.e.value)
+		} else {
+			msg.errCh <- nil
+			db.setIndex(msg.e.key)
+			db.segmentOffset += int64(n)
+			if db.segmentOffset >= db.maxSegmentSize {
+				db.segment.Close()
+				db.segmentIndex++
+				db.loadSegment()
+			}
+		}
+		db.mu.Unlock()
+	}
+}
+
 func (db *Db) Put(key, value string) error {
 	if db.isClosed {
 		return ErrDbClosed
@@ -240,7 +252,7 @@ func (db *Db) Copy(filename string) (int64, hashIndex, error) {
 	}
 	defer swap.Close()
 	for key := range db.index {
-		value, err := db.Get(key)
+		value, err := db.get(key)
 		if err != nil {
 			os.Remove(filename)
 			return 0, nil, err
