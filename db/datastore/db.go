@@ -74,10 +74,9 @@ func (db *Db) write() {
 				db.segmentIndex++
 				db.loadSegment()
 			}
-			db.mu.Unlock()
 		}
+		db.mu.Unlock()
 	}
-	fmt.Println("write channel closed")
 }
 
 func (db *Db) setIndex(key string) {
