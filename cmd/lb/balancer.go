@@ -56,13 +56,17 @@ func health(dst string) bool {
 	return true
 }
 
-func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
+func forward(dst string, rw http.ResponseWriter, r *http.Request, ip string) error {
 	ctx, _ := context.WithTimeout(r.Context(), timeout)
 	fwdRequest := r.Clone(ctx)
 	fwdRequest.RequestURI = ""
 	fwdRequest.URL.Host = dst
 	fwdRequest.URL.Scheme = scheme()
+	fwdRequest.URL.Path = r.URL.Path
+	fwdRequest.URL.RawQuery = r.URL.RawQuery
 	fwdRequest.Host = dst
+
+	fwdRequest.Header.Set("lb-author", ip)
 
 	resp, err := http.DefaultClient.Do(fwdRequest)
 	if err == nil {
@@ -172,7 +176,7 @@ func main() {
 
 		fmt.Printf("forwarding %s to %s\n", ip, healthServersPool[serverIndex])
 
-		forward(healthServersPool[serverIndex], rw, r)
+		forward(healthServersPool[serverIndex], rw, r, ip)
 	}))
 
 	log.Println("Starting load balancer...")

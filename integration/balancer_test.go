@@ -2,6 +2,7 @@ package integration
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"slices"
@@ -27,6 +28,7 @@ var (
 		"server2:8080",
 		"server3:8080",
 	}
+	teamName = "breaking_code"
 )
 
 func (s *BalancerSuite) TestIpToHashNumber(c *C) {
@@ -66,7 +68,9 @@ func (s *BalancerSuite) TestIpToHashNumber(c *C) {
 		go func(ip string) {
 			defer wg.Done()
 
-			req, _ := http.NewRequest("GET", baseAddress, nil)
+			url := fmt.Sprintf("%s/api/v1/some-data?key=%s", baseAddress, teamName)
+
+			req, _ := http.NewRequest("GET", url, nil)
 
 			req.Header.Set("X-Forwarded-For", ip)
 
@@ -85,6 +89,16 @@ func (s *BalancerSuite) TestIpToHashNumber(c *C) {
 
 			isValid := slices.Contains(binding, ip)
 			c.Assert(isValid, Equals, true, Commentf("expected %s to be in %v, got %v", ip, getCorrectBinding(ip), lbFrom))
+
+			if resp.StatusCode != http.StatusOK {
+				c.Errorf("unexpected status code: %d", resp.StatusCode)
+			}
+
+			body, err := io.ReadAll(resp.Body)
+
+			if err != nil || len(body) == 0 {
+				c.Errorf("unexpected response body: %s", body)
+			}
 		}(ip)
 	}
 
@@ -112,7 +126,8 @@ func BenchmarkBalancer(b *testing.B) {
 	benchmarks := make([][]time.Duration, parallel)
 
 	for i := 0; i < parallel; i++ {
-		req, _ := http.NewRequest("GET", baseAddress, nil)
+		url := fmt.Sprintf("%s/api/v1/some-data?key=%s", baseAddress, teamName)
+		req, _ := http.NewRequest("GET", url, nil)
 
 		req.Header.Set("X-Forwarded-For", ips[i%len(ips)])
 
