@@ -1,0 +1,22 @@
+FROM golang:1.22 as build
+
+WORKDIR /go/src/practice-4
+COPY db/datastore db/datastore
+COPY go.mod go.sum ./
+COPY cmd/db cmd/db
+
+ENV CGO_ENABLED=0
+RUN go install cmd/...
+RUN go build -o /go/bin/db cmd/db/db.go
+
+FROM alpine:latest
+WORKDIR /opt/practice-4
+
+COPY entry.sh /opt/practice-4/
+
+COPY --from=build /go/bin/* /opt/practice-4
+RUN mkdir .db
+
+RUN ls -l /opt/practice-4
+ENTRYPOINT ["/opt/practice-4/entry.sh"]
+CMD ["db"]

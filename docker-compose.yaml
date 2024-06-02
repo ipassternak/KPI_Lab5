@@ -33,3 +33,12 @@ services:
       - servers
     ports:
       - "8082:8080"
+
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    networks:
+      - servers
+    ports:
+      - "5432:5432"
